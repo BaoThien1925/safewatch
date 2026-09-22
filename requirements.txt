@@ -1,0 +1,11 @@
+opencv-python
+mediapipe==0.10.21
+tensorflow
+keras
+pandas
+openpyxl
+scikit-learn
+joblib
+streamlit
+numpy
+h5py
