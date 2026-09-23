@@ -1,21 +1,25 @@
-import io
 import os
 import time
-import zipfile
 from collections import Counter, deque
 
 import cv2
-import h5py
 import mediapipe as mp
 import numpy as np
 import streamlit as st
 import tensorflow as tf
-from keras.layers import LSTM, Concatenate, Dense, Dropout, Input
-from keras.models import Model, Sequential
+from keras.layers import LSTM, Dense, Dropout
+from keras.models import Sequential
+
+from hand_features import normalize_hand_landmarks
 
 MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
 FALL_MODEL_PATH = os.path.join(MODELS_DIR, "LSTM_model.h5")
-HAND_MODEL_PATH = os.path.join(MODELS_DIR, "HandLandMarks_Model_300Epochs_new.keras")
+# Model đã train lại với landmark chuẩn hoá (gốc = cổ tay, scale theo cổ tay
+# -> gốc ngón giữa) — accuracy 99.67% so với 81.21% của model cũ trên cùng
+# test set, đặc biệt sửa lỗi nhận sai Need Ambulance/Need Help (xem
+# training/compare_models.py). Bắt buộc phải chuẩn hoá landmark bằng đúng
+# hand_features.normalize_hand_landmarks trước khi đưa vào model này.
+HAND_MODEL_PATH = os.path.join(MODELS_DIR, "HandLandMarks_Model_Normalized.keras")
 
 FALL_TIMESTEPS = 10
 WARMUP_FRAMES = 40
@@ -58,39 +62,11 @@ def build_fall_model():
 
 
 def build_hand_model():
-    lstm_input = Input(shape=(21, 3))
-    lstm_branch = LSTM(64, return_sequences=True, name="lstm")(lstm_input)
-    lstm_branch = LSTM(64, name="lstm_1")(lstm_branch)
-    lstm_branch = Dropout(0.5)(lstm_branch)
-
-    dnn_input = Input(shape=(63,))
-    dnn_branch = Dense(128, activation="relu", name="dense")(dnn_input)
-    dnn_branch = Dropout(0.5)(dnn_branch)
-    dnn_branch = Dense(64, activation="relu", name="dense_1")(dnn_branch)
-
-    combined = Concatenate()([lstm_branch, dnn_branch])
-    output = Dense(7, activation="softmax", name="dense_2")(combined)
-    model = Model(inputs=[lstm_input, dnn_input], outputs=output)
-
-    # File .keras gốc lưu tên layer nội bộ lệch so với model dựng lại tươi
-    # (dense/dense_2/dense_4, lstm/lstm_2 thay vì dense/dense_1/dense_2,
-    # lstm/lstm_1) do được lưu từ 1 phiên Keras có bộ đếm tên layer khác,
-    # nên model.load_weights() theo tên sẽ không khớp và báo thiếu biến.
-    # Đọc thẳng mảng trọng số theo đúng vị trí trong model.weights.h5 rồi
-    # gán bằng set_weights() để né việc khớp tên.
-    with zipfile.ZipFile(HAND_MODEL_PATH) as z:
-        weights_h5 = h5py.File(io.BytesIO(z.read("model.weights.h5")), "r")
-
-    def get(name, idx):
-        return np.array(weights_h5["_layer_checkpoint_dependencies\\" + name]["vars"][str(idx)])
-
-    model.get_layer("lstm").set_weights([get("lstm\\cell", 0), get("lstm\\cell", 1), get("lstm\\cell", 2)])
-    model.get_layer("lstm_1").set_weights([get("lstm_2\\cell", 0), get("lstm_2\\cell", 1), get("lstm_2\\cell", 2)])
-    model.get_layer("dense").set_weights([get("dense", 0), get("dense", 1)])
-    model.get_layer("dense_1").set_weights([get("dense_2", 0), get("dense_2", 1)])
-    model.get_layer("dense_2").set_weights([get("dense_4", 0), get("dense_4", 1)])
-    weights_h5.close()
-    return model
+    # Model này được train và lưu lại bằng model.save() chuẩn của bản Keras
+    # đang dùng (training/retrain_hand_model.py), nên load_model() đọc thẳng
+    # được đầy đủ kiến trúc + trọng số — không cần vá lỗi lệch tên layer như
+    # file .keras gốc (được lưu từ 1 phiên Keras khác, xem lịch sử git).
+    return tf.keras.models.load_model(HAND_MODEL_PATH)
 
 
 @st.cache_resource
@@ -130,8 +106,12 @@ def predict_hand(model, lm_vector):
     # không có input theo thời gian thật, nên gom 10 frame rồi chỉ dùng frame
     # cuối (bản cũ) chỉ tốn ~10 frame chờ vô ích. Predict ngay mỗi frame có
     # tay, và dùng vote ở tầng ứng dụng (majority_label) để làm mượt kết quả.
-    lstm_input = np.array(lm_vector).reshape(1, 21, 3)
-    dnn_input = np.array(lm_vector).reshape(1, 63)
+    #
+    # normalize_hand_landmarks bắt buộc phải khớp với tiền xử lý lúc train
+    # (training/retrain_hand_model.py), nếu không model sẽ dự đoán sai hết.
+    normalized = normalize_hand_landmarks(lm_vector)
+    lstm_input = np.array(normalized).reshape(1, 21, 3)
+    dnn_input = np.array(normalized).reshape(1, 63)
     result = model.predict([lstm_input, dnn_input], verbose=0)
     return HAND_LABELS[int(np.argmax(result))]
 
