@@ -1,4 +1,5 @@
 import io
+import os
 import time
 import zipfile
 
@@ -11,8 +12,9 @@ import tensorflow as tf
 from keras.layers import LSTM, Concatenate, Dense, Dropout, Input
 from keras.models import Model, Sequential
 
-FALL_MODEL_PATH = r"D:\DeTaiAI\NgaQuy\Code\LSTM_model.h5"
-HAND_MODEL_PATH = r"D:\DeTaiAI\NCKH SV 2024\Code\Hand_Detection\Model_HandDetection\HandLandMarks_Model_300Epochs_new.keras"
+MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
+FALL_MODEL_PATH = os.path.join(MODELS_DIR, "LSTM_model.h5")
+HAND_MODEL_PATH = os.path.join(MODELS_DIR, "HandLandMarks_Model_300Epochs_new.keras")
 
 FALL_TIMESTEPS = 10
 HAND_TIMESTEPS = 10

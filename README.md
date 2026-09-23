@@ -16,8 +16,9 @@ Trình duyệt sẽ tự mở `http://localhost:8501`. Tích "Chạy webcam" ở
 
 ## Cấu trúc
 
-- `app.py` — giao diện Streamlit + pipeline nhận diện (dùng lại model có sẵn từ `NgaQuy/Code/LSTM_model.h5` và `NCKH SV 2024/Code/Hand_Detection/Model_HandDetection/HandLandMarks_Model_300Epochs_new.keras`, không cần train lại).
-- `.venv/` — môi trường Python riêng cho demo này.
+- `app.py` — giao diện Streamlit + pipeline nhận diện.
+- `models/` — 2 model đã train sẵn (`LSTM_model.h5` cho phát hiện ngã, `HandLandMarks_Model_300Epochs_new.keras` cho nhận diện tay), không cần train lại.
+- `.venv/` — môi trường Python riêng cho demo này (không commit lên git).
 
 ## Cách hoạt động
 
