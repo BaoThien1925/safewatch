@@ -2,6 +2,7 @@ import io
 import os
 import time
 import zipfile
+from collections import Counter, deque
 
 import cv2
 import h5py
@@ -17,11 +18,25 @@ FALL_MODEL_PATH = os.path.join(MODELS_DIR, "LSTM_model.h5")
 HAND_MODEL_PATH = os.path.join(MODELS_DIR, "HandLandMarks_Model_300Epochs_new.keras")
 
 FALL_TIMESTEPS = 10
-HAND_TIMESTEPS = 10
 WARMUP_FRAMES = 40
 
 HAND_LABELS = ["Like", "Dislike", "OK", "Neutral", "Need Ambulance", "Need Help", "Signal For Help"]
 SOS_HAND_LABELS = {"Need Ambulance", "Need Help", "Signal For Help"}
+
+# Debounce: chỉ đổi nhãn hiển thị/cảnh báo khi 1 nhãn chiếm đa số trong
+# VOTE_WINDOW lần predict gần nhất, để 1 frame nhiễu không làm nhãn nhảy loạn.
+FALL_VOTE_WINDOW = 5
+HAND_VOTE_WINDOW = 5
+
+# Giữ cảnh báo SOS tối thiểu chừng này giây sau khi trigger, tránh nhấp nháy
+# khi tín hiệu dao động ngay ở ngưỡng.
+ALERT_HOLD_SECONDS = 2.0
+
+
+def majority_label(votes, default):
+    if not votes:
+        return default
+    return Counter(votes).most_common(1)[0][0]
 
 
 def build_fall_model():
@@ -110,12 +125,14 @@ def predict_fall(model, lm_list):
     return "Fall" if result[0][0] > 0.5 else "NotFall"
 
 
-def predict_hand(model, lm_list):
-    data = np.array(lm_list).reshape(1, HAND_TIMESTEPS, 21, 3)
-    dnn_data = np.array(lm_list).reshape(1, HAND_TIMESTEPS, 63)
-    lstm_last = data[:, -1, :, :]
-    dnn_last = dnn_data[:, -1, :]
-    result = model.predict([lstm_last, dnn_last], verbose=0)
+def predict_hand(model, lm_vector):
+    # Model chỉ nhận 1 frame (21 điểm x,y,z) mỗi lần predict — kiến trúc gốc
+    # không có input theo thời gian thật, nên gom 10 frame rồi chỉ dùng frame
+    # cuối (bản cũ) chỉ tốn ~10 frame chờ vô ích. Predict ngay mỗi frame có
+    # tay, và dùng vote ở tầng ứng dụng (majority_label) để làm mượt kết quả.
+    lstm_input = np.array(lm_vector).reshape(1, 21, 3)
+    dnn_input = np.array(lm_vector).reshape(1, 63)
+    result = model.predict([lstm_input, dnn_input], verbose=0)
     return HAND_LABELS[int(np.argmax(result))]
 
 
@@ -164,10 +181,16 @@ def main():
         st.error("Không mở được webcam. Kiểm tra webcam có đang bị ứng dụng khác chiếm dụng, hoặc chưa cấp quyền camera cho Python trong Windows Settings > Privacy > Camera.")
         return
 
-    fall_lm_list = []
-    hand_lm_list = []
+    # Sliding window: giữ đúng FALL_TIMESTEPS frame gần nhất, predict lại mỗi
+    # khi có frame mới (không chờ gom hẳn 1 lô 10 frame rồi xoá) — giảm độ
+    # trễ cảm nhận so với bản chia khối rời rạc cũ.
+    fall_lm_window = deque(maxlen=FALL_TIMESTEPS)
+    fall_votes = deque(maxlen=FALL_VOTE_WINDOW)
+    hand_votes = deque(maxlen=HAND_VOTE_WINDOW)
+
     fall_label = "Warmup..."
     hand_label = "Warmup..."
+    alert_until = 0.0
     frame_count = 0
     prev_time = time.time()
 
@@ -184,26 +207,28 @@ def main():
             if enable_fall:
                 pose_results = pose_detector.process(img_rgb)
                 if pose_results.pose_landmarks:
-                    fall_lm_list.append(pose_landmarks_to_vector(pose_results))
+                    fall_lm_window.append(pose_landmarks_to_vector(pose_results))
                     frame = draw_pose(frame, pose_results)
-                    if len(fall_lm_list) == FALL_TIMESTEPS:
-                        fall_label = predict_fall(fall_model, fall_lm_list)
-                        fall_lm_list = []
+                    if len(fall_lm_window) == FALL_TIMESTEPS:
+                        fall_votes.append(predict_fall(fall_model, list(fall_lm_window)))
+                        fall_label = majority_label(fall_votes, fall_label)
 
             if enable_hand:
                 hand_results = hand_detector.process(img_rgb)
                 if hand_results.multi_hand_landmarks:
-                    hand_lm_list.append(hand_landmarks_to_vector(hand_results))
                     frame = draw_hand(frame, hand_results)
-                    if len(hand_lm_list) == HAND_TIMESTEPS:
-                        hand_label = predict_hand(hand_model, hand_lm_list)
-                        hand_lm_list = []
+                    hand_votes.append(predict_hand(hand_model, hand_landmarks_to_vector(hand_results)))
+                    hand_label = majority_label(hand_votes, hand_label)
                 else:
+                    hand_votes.clear()
                     hand_label = "No hands"
 
-        sos_alert = (enable_fall and fall_label == "Fall") or (enable_hand and hand_label in SOS_HAND_LABELS)
-
+        raw_sos = (enable_fall and fall_label == "Fall") or (enable_hand and hand_label in SOS_HAND_LABELS)
         now = time.time()
+        if raw_sos:
+            alert_until = now + ALERT_HOLD_SECONDS
+        sos_alert = now < alert_until
+
         fps = 1 / (now - prev_time) if now > prev_time else 0
         prev_time = now
 
