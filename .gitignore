@@ -2,3 +2,5 @@
 __pycache__/
 *.pyc
 training/data/combined_raw_dataset.csv
+data/events.db
+data/profile.json

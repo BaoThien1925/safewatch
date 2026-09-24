@@ -11,6 +11,7 @@ import tensorflow as tf
 from keras.layers import LSTM, Dense, Dropout
 from keras.models import Sequential
 
+import event_log
 from hand_features import (
     SIGNAL_SEQUENCE_LENGTH,
     load_hand_labels,
@@ -54,6 +55,13 @@ HAND_VOTE_WINDOW = 5
 # Giữ cảnh báo SOS tối thiểu chừng này giây sau khi trigger, tránh nhấp nháy
 # khi tín hiệu dao động ngay ở ngưỡng.
 ALERT_HOLD_SECONDS = 2.0
+
+# Ngã xong tự đứng lên lại thường chỉ là trượt chân bình thường, không phải
+# cấp cứu — báo động ngay lúc đó (đặc biệt nếu sau này có thêm âm thanh) có
+# thể phản tác dụng trong tình huống như bị khống chế/bắt cóc (gây chú ý cho
+# kẻ xấu). Nên: Ngã chỉ THEO DÕI im lặng trong khoảng grace period này; chỉ
+# thật sự báo động nếu hết thời gian mà vẫn chưa đứng lên lại được.
+DEFAULT_FALL_GRACE_SECONDS = 120
 
 # Model tay là bộ phân loại closed-set: argmax luôn ép output thành 1 trong 7
 # nhãn dù cử chỉ thật không nằm trong tập train. Chỉ nhận nhãn khi xác suất
@@ -179,6 +187,15 @@ def main():
     with st.sidebar:
         st.header("Cấu hình")
         enable_fall = st.checkbox("Bật phát hiện Ngã", value=True)
+        fall_grace_seconds = st.slider(
+            "Thời gian theo dõi sau khi Ngã trước khi báo động (giây)",
+            min_value=5,
+            max_value=300,
+            value=DEFAULT_FALL_GRACE_SECONDS,
+            step=5,
+            help="Ngã xong tự đứng lên lại trong thời gian này sẽ KHÔNG báo động — chỉ báo động thật nếu hết "
+            "thời gian mà vẫn chưa đứng lên được (tránh báo động ngay gây chú ý không cần thiết, ví dụ khi bị khống chế).",
+        )
         enable_hand = st.checkbox("Bật phát hiện tay SOS", value=True)
         hand_confidence_threshold = st.slider(
             "Ngưỡng tin cậy tay (%)",
@@ -211,6 +228,7 @@ def main():
     video_col, status_col = st.columns([2, 1])
     frame_placeholder = video_col.empty()
     fall_placeholder = status_col.empty()
+    fall_monitor_placeholder = status_col.empty()
     hand_placeholder = status_col.empty()
     hand_confidence_placeholder = status_col.empty()
     signal_placeholder = status_col.empty()
@@ -231,6 +249,9 @@ def main():
         st.error("Không mở được webcam. Kiểm tra webcam có đang bị ứng dụng khác chiếm dụng, hoặc chưa cấp quyền camera cho Python trong Windows Settings > Privacy > Camera.")
         return
 
+    event_log.init_db()
+    was_alerting = False
+
     # Sliding window: giữ đúng FALL_TIMESTEPS frame gần nhất, predict lại mỗi
     # khi có frame mới (không chờ gom hẳn 1 lô 10 frame rồi xoá) — giảm độ
     # trễ cảm nhận so với bản chia khối rời rạc cũ.
@@ -240,6 +261,8 @@ def main():
     signal_window = deque(maxlen=SIGNAL_SEQUENCE_LENGTH)
 
     fall_label = "Warmup..."
+    fall_down_since = None
+    fall_escalated = False
     hand_label = "Warmup..."
     hand_confidence = 0.0
     signal_detected = False
@@ -316,21 +339,49 @@ def main():
                     signal_consecutive_count = 0
                     signal_detected = False
 
+        now = time.time()
+
+        if enable_fall:
+            if fall_label == "Fall":
+                if fall_down_since is None:
+                    fall_down_since = now
+            else:
+                fall_down_since = None  # đã đứng lên lại -> huỷ theo dõi, không báo động
+            fall_escalated = fall_down_since is not None and (now - fall_down_since) >= fall_grace_seconds
+        else:
+            fall_down_since = None
+            fall_escalated = False
+
         raw_sos = (
-            (enable_fall and fall_label == "Fall")
+            (enable_fall and fall_escalated)
             or (enable_hand and hand_label in SOS_HAND_LABELS)
             or (enable_hand and enable_signal and signal_detected)
         )
-        now = time.time()
         if raw_sos:
             alert_until = now + ALERT_HOLD_SECONDS
         sos_alert = now < alert_until
+
+        if sos_alert and not was_alerting:
+            # Chỉ ghi log 1 lần lúc cảnh báo MỚI bắt đầu (rising edge), không
+            # ghi lặp lại mỗi frame trong suốt lúc sos_alert vẫn còn True.
+            if enable_fall and fall_escalated:
+                event_log.log_event("Ngã (không đứng lên lại)", f"Sau {fall_grace_seconds}s theo dõi")
+            elif enable_hand and hand_label in SOS_HAND_LABELS:
+                event_log.log_event(hand_label, f"Độ tin cậy {hand_confidence * 100:.0f}%")
+            elif enable_hand and enable_signal and signal_detected:
+                event_log.log_event("Signal for Help (chuỗi động tác)", f"Xác suất {signal_probability * 100:.0f}%")
+        was_alerting = sos_alert
 
         fps = 1 / (now - prev_time) if now > prev_time else 0
         prev_time = now
 
         frame_placeholder.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), channels="RGB")
         fall_placeholder.metric("Trạng thái ngã", fall_label if enable_fall else "Đã tắt")
+        if enable_fall and fall_down_since is not None and not fall_escalated:
+            remaining = fall_grace_seconds - (now - fall_down_since)
+            fall_monitor_placeholder.warning(f"⚠️ Đang ngã — theo dõi, còn {remaining:.0f}s trước khi báo động")
+        else:
+            fall_monitor_placeholder.empty()
         hand_placeholder.metric("Cử chỉ tay", hand_label if enable_hand else "Đã tắt")
         if enable_hand:
             hand_confidence_placeholder.caption(f"Độ tin cậy: {hand_confidence * 100:.0f}%")
