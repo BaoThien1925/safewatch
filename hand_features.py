@@ -18,6 +18,16 @@ MIDDLE_MCP_IDX = 9
 HAND_LABELS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "training", "hand_labels.json")
 
 
+SIGNAL_SEQUENCE_LENGTH = 30  # ~1 giay o 30fps, du cho chuoi 3 buoc cua Signal for Help
+
+
+def normalize_hand_sequence(frames):
+    """Chuẩn hoá từng frame trong 1 chuỗi (list các vector 63 số thô) —
+    dùng chung giữa training/train_signal_sequence_model.py và app.py cho
+    pipeline nhận diện Signal for Help theo chuyển động."""
+    return [normalize_hand_landmarks(frame) for frame in frames]
+
+
 def load_hand_labels(labels_path=HAND_LABELS_PATH):
     """Đọc training/hand_labels.json — nguồn duy nhất cho danh sách nhãn tay,
     dùng chung giữa app.py và các script train để không bao giờ bị lệch thứ

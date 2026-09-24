@@ -11,7 +11,12 @@ import tensorflow as tf
 from keras.layers import LSTM, Dense, Dropout
 from keras.models import Sequential
 
-from hand_features import load_hand_labels, normalize_hand_landmarks
+from hand_features import (
+    SIGNAL_SEQUENCE_LENGTH,
+    load_hand_labels,
+    normalize_hand_landmarks,
+    normalize_hand_sequence,
+)
 
 MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
 FALL_MODEL_PATH = os.path.join(MODELS_DIR, "LSTM_model.h5")
@@ -21,6 +26,19 @@ FALL_MODEL_PATH = os.path.join(MODELS_DIR, "LSTM_model.h5")
 # phải chuẩn hoá landmark bằng đúng hand_features.normalize_hand_landmarks
 # trước khi đưa vào model này. Danh sách nhãn khớp với training/hand_labels.json.
 HAND_MODEL_PATH = os.path.join(MODELS_DIR, "HandLandMarks_Model_Extended.keras")
+# Pipeline độc lập thứ 3 (không đụng gì tới model 14 nhãn tĩnh ở trên): model
+# nhị phân nhận diện CHUỖI động tác Signal for Help theo thời gian (xoè tay
+# -> gập ngón cái -> khép 4 ngón), vì cử chỉ này là 1 chuyển động, không phải
+# 1 tư thế tĩnh — xem training/train_signal_sequence_model.py. Optional: chỉ
+# bật khi model đã được train (chạy training/collect_hand_sequence.py rồi
+# training/train_signal_sequence_model.py trước).
+SIGNAL_MODEL_PATH = os.path.join(MODELS_DIR, "SignalForHelpSequenceModel.keras")
+SIGNAL_CONFIDENCE_THRESHOLD = 0.7
+# Model chuỗi train trên rất ít data (60 mẫu, 1 buổi quay) nên dễ báo dương
+# giả (false positive) với cử động tay ngẫu nhiên. Yêu cầu N cửa sổ liên
+# tiếp đều dự đoán "signal" mới xác nhận thật — giảm false positive tức thời
+# mà không cần thu thêm data (dù data đa dạng hơn vẫn là hướng sửa gốc).
+SIGNAL_CONSECUTIVE_REQUIRED = 5
 
 FALL_TIMESTEPS = 10
 WARMUP_FRAMES = 40
@@ -77,9 +95,15 @@ def build_hand_model():
     return tf.keras.models.load_model(HAND_MODEL_PATH)
 
 
+def build_signal_model():
+    if not os.path.exists(SIGNAL_MODEL_PATH):
+        return None
+    return tf.keras.models.load_model(SIGNAL_MODEL_PATH)
+
+
 @st.cache_resource
 def load_models():
-    return build_fall_model(), build_hand_model()
+    return build_fall_model(), build_hand_model(), build_signal_model()
 
 
 @st.cache_resource
@@ -130,6 +154,13 @@ def predict_hand(model, lm_vector, confidence_threshold):
     return HAND_LABELS[int(np.argmax(result))], confidence
 
 
+def predict_signal_sequence(model, frame_sequence, confidence_threshold):
+    normalized = normalize_hand_sequence(frame_sequence)
+    data = np.expand_dims(np.array(normalized, dtype=np.float32), axis=0)
+    probability = float(model(data, training=False).numpy()[0][0])
+    return probability >= confidence_threshold, probability
+
+
 def draw_pose(img, results):
     mp.solutions.drawing_utils.draw_landmarks(img, results.pose_landmarks, mp.solutions.pose.POSE_CONNECTIONS)
     return img
@@ -158,14 +189,31 @@ def main():
         ) / 100
         run = st.checkbox("Chạy webcam", value=False, key="run_webcam")
 
-    fall_model, hand_model = load_models()
+    fall_model, hand_model, signal_model = load_models()
     pose_detector, hand_detector = get_mediapipe()
+
+    enable_signal = False
+    with st.sidebar:
+        if signal_model is not None:
+            enable_signal = st.checkbox(
+                "Bật nhận diện chuỗi Signal for Help (thử nghiệm, còn hay báo sai)",
+                value=False,
+                help="Model chỉ train trên 60 mẫu 1 buổi quay, dễ báo dương giả (false positive). "
+                "Tạm để mặc định tắt, tự bật lên nếu muốn thử tiếp — cần thu thêm data đa dạng để dùng thật.",
+            )
+        else:
+            st.caption(
+                "Chưa có model chuỗi Signal for Help — chạy "
+                "training/collect_hand_sequence.py rồi training/train_signal_sequence_model.py "
+                "để bật tính năng này."
+            )
 
     video_col, status_col = st.columns([2, 1])
     frame_placeholder = video_col.empty()
     fall_placeholder = status_col.empty()
     hand_placeholder = status_col.empty()
     hand_confidence_placeholder = status_col.empty()
+    signal_placeholder = status_col.empty()
     alert_placeholder = status_col.empty()
     fps_placeholder = status_col.empty()
 
@@ -189,10 +237,14 @@ def main():
     fall_lm_window = deque(maxlen=FALL_TIMESTEPS)
     fall_votes = deque(maxlen=FALL_VOTE_WINDOW)
     hand_votes = deque(maxlen=HAND_VOTE_WINDOW)
+    signal_window = deque(maxlen=SIGNAL_SEQUENCE_LENGTH)
 
     fall_label = "Warmup..."
     hand_label = "Warmup..."
     hand_confidence = 0.0
+    signal_detected = False
+    signal_probability = 0.0
+    signal_consecutive_count = 0
     alert_until = 0.0
     frame_count = 0
     prev_time = time.time()
@@ -244,16 +296,31 @@ def main():
                 hand_results = detection_results["hands"]
                 if hand_results.multi_hand_landmarks:
                     frame = draw_hand(frame, hand_results)
-                    raw_label, hand_confidence = predict_hand(
-                        hand_model, hand_landmarks_to_vector(hand_results), hand_confidence_threshold
-                    )
+                    raw_vector = hand_landmarks_to_vector(hand_results)
+                    raw_label, hand_confidence = predict_hand(hand_model, raw_vector, hand_confidence_threshold)
                     hand_votes.append(raw_label)
                     hand_label = majority_label(hand_votes, hand_label)
+
+                    if enable_signal:
+                        signal_window.append(raw_vector)
+                        if len(signal_window) == SIGNAL_SEQUENCE_LENGTH:
+                            raw_signal, signal_probability = predict_signal_sequence(
+                                signal_model, list(signal_window), SIGNAL_CONFIDENCE_THRESHOLD
+                            )
+                            signal_consecutive_count = signal_consecutive_count + 1 if raw_signal else 0
+                            signal_detected = signal_consecutive_count >= SIGNAL_CONSECUTIVE_REQUIRED
                 else:
                     hand_votes.clear()
                     hand_label = "No hands"
+                    signal_window.clear()  # mất tay giữa chừng -> chuỗi không còn liên tục, reset
+                    signal_consecutive_count = 0
+                    signal_detected = False
 
-        raw_sos = (enable_fall and fall_label == "Fall") or (enable_hand and hand_label in SOS_HAND_LABELS)
+        raw_sos = (
+            (enable_fall and fall_label == "Fall")
+            or (enable_hand and hand_label in SOS_HAND_LABELS)
+            or (enable_hand and enable_signal and signal_detected)
+        )
         now = time.time()
         if raw_sos:
             alert_until = now + ALERT_HOLD_SECONDS
@@ -267,6 +334,8 @@ def main():
         hand_placeholder.metric("Cử chỉ tay", hand_label if enable_hand else "Đã tắt")
         if enable_hand:
             hand_confidence_placeholder.caption(f"Độ tin cậy: {hand_confidence * 100:.0f}%")
+        if enable_hand and enable_signal:
+            signal_placeholder.caption(f"Chuỗi Signal for Help: {'Có' if signal_detected else 'Không'} ({signal_probability * 100:.0f}%)")
         fps_placeholder.caption(f"FPS: {fps:.1f}")
 
         if sos_alert:
