@@ -7,10 +7,25 @@ Output: vector 63 số đã chuẩn hoá — bất biến với vị trí tay tr
 khoảng cách cổ tay -> gốc ngón giữa).
 """
 
+import json
+import os
+
 import numpy as np
 
 WRIST_IDX = 0
 MIDDLE_MCP_IDX = 9
+
+HAND_LABELS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "training", "hand_labels.json")
+
+
+def load_hand_labels(labels_path=HAND_LABELS_PATH):
+    """Đọc training/hand_labels.json — nguồn duy nhất cho danh sách nhãn tay,
+    dùng chung giữa app.py và các script train để không bao giờ bị lệch thứ
+    tự/tên nhãn. Trả về list tên nhãn theo đúng thứ tự index 0, 1, 2, ...
+    """
+    with open(labels_path, "r", encoding="utf-8") as f:
+        labels = json.load(f)
+    return [labels[str(i)] for i in range(len(labels))]
 
 
 def normalize_hand_landmarks(vector):

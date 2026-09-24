@@ -1,4 +1,5 @@
 import os
+import threading
 import time
 from collections import Counter, deque
 
@@ -10,21 +11,21 @@ import tensorflow as tf
 from keras.layers import LSTM, Dense, Dropout
 from keras.models import Sequential
 
-from hand_features import normalize_hand_landmarks
+from hand_features import load_hand_labels, normalize_hand_landmarks
 
 MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
 FALL_MODEL_PATH = os.path.join(MODELS_DIR, "LSTM_model.h5")
-# Model đã train lại với landmark chuẩn hoá (gốc = cổ tay, scale theo cổ tay
-# -> gốc ngón giữa) — accuracy 99.67% so với 81.21% của model cũ trên cùng
-# test set, đặc biệt sửa lỗi nhận sai Need Ambulance/Need Help (xem
-# training/compare_models.py). Bắt buộc phải chuẩn hoá landmark bằng đúng
-# hand_features.normalize_hand_landmarks trước khi đưa vào model này.
-HAND_MODEL_PATH = os.path.join(MODELS_DIR, "HandLandMarks_Model_Normalized.keras")
+# Model 14 nhãn (7 gốc + 7 tự thu: Fist, Peace Sign, Rock On, One Finger,
+# Three Fingers, Call Me, Gun Sign), train trên landmark đã chuẩn hoá —
+# accuracy 99.54% (xem training/retrain_extended_hand_model.py). Bắt buộc
+# phải chuẩn hoá landmark bằng đúng hand_features.normalize_hand_landmarks
+# trước khi đưa vào model này. Danh sách nhãn khớp với training/hand_labels.json.
+HAND_MODEL_PATH = os.path.join(MODELS_DIR, "HandLandMarks_Model_Extended.keras")
 
 FALL_TIMESTEPS = 10
 WARMUP_FRAMES = 40
 
-HAND_LABELS = ["Like", "Dislike", "OK", "Neutral", "Need Ambulance", "Need Help", "Signal For Help"]
+HAND_LABELS = load_hand_labels()
 SOS_HAND_LABELS = {"Need Ambulance", "Need Help", "Signal For Help"}
 
 # Debounce: chỉ đổi nhãn hiển thị/cảnh báo khi 1 nhãn chiếm đa số trong
@@ -35,6 +36,13 @@ HAND_VOTE_WINDOW = 5
 # Giữ cảnh báo SOS tối thiểu chừng này giây sau khi trigger, tránh nhấp nháy
 # khi tín hiệu dao động ngay ở ngưỡng.
 ALERT_HOLD_SECONDS = 2.0
+
+# Model tay là bộ phân loại closed-set: argmax luôn ép output thành 1 trong 7
+# nhãn dù cử chỉ thật không nằm trong tập train. Chỉ nhận nhãn khi xác suất
+# softmax cao nhất vượt ngưỡng này, còn lại coi là "Uncertain" (không tính
+# vào SOS) để tay làm động tác lạ không bị ép nhận nhầm thành cử chỉ SOS.
+DEFAULT_HAND_CONFIDENCE_THRESHOLD = 0.8
+UNCERTAIN_LABEL = "Uncertain"
 
 
 def majority_label(votes, default):
@@ -96,12 +104,15 @@ def hand_landmarks_to_vector(results):
 
 
 def predict_fall(model, lm_list):
-    data = np.expand_dims(np.array(lm_list), axis=0)
-    result = model.predict(data, verbose=0)
+    # Gọi model trực tiếp (model(x)) thay vì model.predict(x) — predict() có
+    # overhead quản lý dataset/callback không cần thiết khi gọi liên tục mỗi
+    # frame với 1 mẫu duy nhất, đo thực tế chậm hơn rõ so với gọi trực tiếp.
+    data = np.expand_dims(np.array(lm_list, dtype=np.float32), axis=0)
+    result = model(data, training=False).numpy()
     return "Fall" if result[0][0] > 0.5 else "NotFall"
 
 
-def predict_hand(model, lm_vector):
+def predict_hand(model, lm_vector, confidence_threshold):
     # Model chỉ nhận 1 frame (21 điểm x,y,z) mỗi lần predict — kiến trúc gốc
     # không có input theo thời gian thật, nên gom 10 frame rồi chỉ dùng frame
     # cuối (bản cũ) chỉ tốn ~10 frame chờ vô ích. Predict ngay mỗi frame có
@@ -110,10 +121,13 @@ def predict_hand(model, lm_vector):
     # normalize_hand_landmarks bắt buộc phải khớp với tiền xử lý lúc train
     # (training/retrain_hand_model.py), nếu không model sẽ dự đoán sai hết.
     normalized = normalize_hand_landmarks(lm_vector)
-    lstm_input = np.array(normalized).reshape(1, 21, 3)
-    dnn_input = np.array(normalized).reshape(1, 63)
-    result = model.predict([lstm_input, dnn_input], verbose=0)
-    return HAND_LABELS[int(np.argmax(result))]
+    lstm_input = np.array(normalized, dtype=np.float32).reshape(1, 21, 3)
+    dnn_input = np.array(normalized, dtype=np.float32).reshape(1, 63)
+    result = model([lstm_input, dnn_input], training=False).numpy()[0]
+    confidence = float(np.max(result))
+    if confidence < confidence_threshold:
+        return UNCERTAIN_LABEL, confidence
+    return HAND_LABELS[int(np.argmax(result))], confidence
 
 
 def draw_pose(img, results):
@@ -135,6 +149,13 @@ def main():
         st.header("Cấu hình")
         enable_fall = st.checkbox("Bật phát hiện Ngã", value=True)
         enable_hand = st.checkbox("Bật phát hiện tay SOS", value=True)
+        hand_confidence_threshold = st.slider(
+            "Ngưỡng tin cậy tay (%)",
+            min_value=0,
+            max_value=100,
+            value=int(DEFAULT_HAND_CONFIDENCE_THRESHOLD * 100),
+            help="Cử chỉ tay có xác suất dự đoán thấp hơn ngưỡng này sẽ hiện 'Uncertain' thay vì bị ép nhận thành 1 trong 7 cử chỉ đã train.",
+        ) / 100
         run = st.checkbox("Chạy webcam", value=False, key="run_webcam")
 
     fall_model, hand_model = load_models()
@@ -144,6 +165,7 @@ def main():
     frame_placeholder = video_col.empty()
     fall_placeholder = status_col.empty()
     hand_placeholder = status_col.empty()
+    hand_confidence_placeholder = status_col.empty()
     alert_placeholder = status_col.empty()
     fps_placeholder = status_col.empty()
 
@@ -170,6 +192,7 @@ def main():
 
     fall_label = "Warmup..."
     hand_label = "Warmup..."
+    hand_confidence = 0.0
     alert_until = 0.0
     frame_count = 0
     prev_time = time.time()
@@ -184,8 +207,32 @@ def main():
         img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
         if frame_count > WARMUP_FRAMES:
+            # Pose (ngã) và Hands (tay) là 2 MediaPipe Solution độc lập, không
+            # chia sẻ state, nên chạy song song bằng thread thay vì tuần tự
+            # giúp giảm độ trễ mỗi frame gần một nửa (2 lệnh .process() nặng
+            # nhất trong loop từng chạy nối tiếp nhau).
+            detection_results = {}
+
+            def run_pose():
+                detection_results["pose"] = pose_detector.process(img_rgb)
+
+            def run_hands():
+                detection_results["hands"] = hand_detector.process(img_rgb)
+
+            threads = []
             if enable_fall:
-                pose_results = pose_detector.process(img_rgb)
+                t = threading.Thread(target=run_pose)
+                t.start()
+                threads.append(t)
+            if enable_hand:
+                t = threading.Thread(target=run_hands)
+                t.start()
+                threads.append(t)
+            for t in threads:
+                t.join()
+
+            if enable_fall:
+                pose_results = detection_results["pose"]
                 if pose_results.pose_landmarks:
                     fall_lm_window.append(pose_landmarks_to_vector(pose_results))
                     frame = draw_pose(frame, pose_results)
@@ -194,10 +241,13 @@ def main():
                         fall_label = majority_label(fall_votes, fall_label)
 
             if enable_hand:
-                hand_results = hand_detector.process(img_rgb)
+                hand_results = detection_results["hands"]
                 if hand_results.multi_hand_landmarks:
                     frame = draw_hand(frame, hand_results)
-                    hand_votes.append(predict_hand(hand_model, hand_landmarks_to_vector(hand_results)))
+                    raw_label, hand_confidence = predict_hand(
+                        hand_model, hand_landmarks_to_vector(hand_results), hand_confidence_threshold
+                    )
+                    hand_votes.append(raw_label)
                     hand_label = majority_label(hand_votes, hand_label)
                 else:
                     hand_votes.clear()
@@ -215,6 +265,8 @@ def main():
         frame_placeholder.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), channels="RGB")
         fall_placeholder.metric("Trạng thái ngã", fall_label if enable_fall else "Đã tắt")
         hand_placeholder.metric("Cử chỉ tay", hand_label if enable_hand else "Đã tắt")
+        if enable_hand:
+            hand_confidence_placeholder.caption(f"Độ tin cậy: {hand_confidence * 100:.0f}%")
         fps_placeholder.caption(f"FPS: {fps:.1f}")
 
         if sos_alert:
