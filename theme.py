@@ -150,9 +150,18 @@ def render_sidebar_brand():
     )
 
 
-def render_sidebar_profile(name="Nguyễn Văn A", role="Người dùng cá nhân", system_online=True):
-    status_dot = "🟢" if system_online else "🔴"
-    status_text = "Hệ thống hoạt động" if system_online else "Hệ thống ngưng"
+def render_sidebar_profile(name="Nguyễn Văn A", role="Người dùng cá nhân"):
+    """Chỉ render avatar/tên/role — KHÔNG kèm trạng thái hệ thống nữa.
+
+    Trạng thái online/offline cần cập nhật LIÊN TỤC trong lúc trang Xem
+    trực tiếp đang chạy vòng lặp webcam, nhưng main.py chỉ chạy phần này
+    ĐÚNG 1 LẦN trước khi vào nav.run() — không có cơ hội cập nhật lại
+    trong suốt lúc vòng lặp còn sống, nên trước đây hiện sai (báo "Hệ
+    thống ngưng" dù camera đang live). Trạng thái đúng giờ render bằng
+    sidebar_status_placeholder(), gọi và cập nhật trực tiếp TỪ BÊN TRONG
+    views/live_view.py (cùng 1 script đang chạy liên tục, giống cách
+    frame_placeholder/status_banner_placeholder đã cập nhật đúng).
+    """
     st.markdown("---")
     st.markdown(
         f"""
@@ -167,11 +176,16 @@ def render_sidebar_profile(name="Nguyễn Văn A", role="Người dùng cá nhâ
                 <div style="font-size:0.72rem;color:{COLOR_TEXT_MUTED};">{role}</div>
             </div>
         </div>
-        <div style="font-size:0.75rem;color:{COLOR_TEXT_MUTED};margin-top:0.5rem;">
-            {status_dot} {status_text}
-        </div>
         """,
         unsafe_allow_html=True,
+    )
+
+
+def sidebar_status_html(system_online):
+    status_dot = "🟢" if system_online else "🔴"
+    status_text = "Hệ thống hoạt động" if system_online else "Hệ thống ngưng"
+    return (
+        f'<div style="font-size:0.75rem;color:{COLOR_TEXT_MUTED};">{status_dot} {status_text}</div>'
     )
 
 

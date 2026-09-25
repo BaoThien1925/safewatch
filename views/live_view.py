@@ -8,9 +8,9 @@ Bật/tắt pipeline + ngưỡng được cấu hình ở trang Cấu hình, đ�
 st.session_state — trang này chỉ hiển thị + có nút Bắt đầu/Dừng giám sát.
 """
 
-import threading
 import time
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 
 import cv2
 import streamlit as st
@@ -18,7 +18,7 @@ import streamlit as st
 import detection_engine as engine
 import event_log
 from hand_features import SIGNAL_SEQUENCE_LENGTH
-from theme import badge_html, status_banner_html
+from theme import badge_html, sidebar_status_html, status_banner_html
 
 engine.ensure_settings_defaults()
 
@@ -31,17 +31,19 @@ enable_signal = s["enable_signal"]
 fall_grace_seconds = s["fall_grace_seconds"]
 hand_confidence_threshold = s["hand_confidence_threshold"]
 signal_confidence_threshold = s["signal_confidence_threshold"]
-show_overlay = s["show_overlay"]
 mirror_camera = s["mirror_camera"]
 alert_hold_seconds = s["alert_hold_seconds"]
 cam_width, cam_height = engine.CAMERA_RESOLUTIONS.get(s["camera_resolution"], (640, 480))
 
-top_col1, top_col2, top_col3 = st.columns([3, 2, 1])
+top_col1, top_col2, top_col3, top_col4 = st.columns([3, 2, 2, 1])
 with top_col1:
     st.selectbox("Camera", ["Webcam chính (mặc định)"], disabled=True)
 with top_col2:
     st.caption("Bật/tắt pipeline và ngưỡng: xem trang **Cấu hình**")
 with top_col3:
+    show_overlay = st.checkbox("Hiện điểm landmark", value=s["show_overlay"], key="show_overlay")
+    st.caption("Tắt để giảm tải vẽ hình, có thể mượt hơn")
+with top_col4:
     run = st.checkbox("▶️ Bắt đầu giám sát", value=False, key="run_webcam")
 
 video_col, status_col = st.columns([7, 3])
@@ -70,9 +72,22 @@ if enable_signal and signal_model is None:
     enable_signal = False
 pose_detector, hand_detector = engine.get_mediapipe()
 
+# Lần gọi đầu tiên của 1 model Keras luôn chậm hơn hẳn các lần sau (TF phải
+# trace/biên dịch graph cho shape input đó, dựng kernel oneDNN...) — dù
+# model đã cache qua @st.cache_resource, CHI PHÍ NÀY vẫn xảy ra ở lần
+# predict thật đầu tiên, đúng lúc người dùng đang nhìn thấy webcam chạy.
+# "Làm nóng" bằng 1 lần gọi giả (input toàn số 0) ngay bây giờ, trước khi
+# vào loop hiển thị, để chi phí này không lộ ra thành giật ở vài frame đầu.
+engine.warm_up_models(fall_model, hand_model, signal_model)
+
 cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
 cap.set(3, cam_width)
 cap.set(4, cam_height)
+# Buffer mặc định của OpenCV có thể giữ vài frame cũ trong hàng đợi driver —
+# nếu vòng lặp xử lý chậm hơn tốc độ webcam sinh frame, hình hiển thị sẽ trễ
+# so với thực tế (đọc frame CŨ trong buffer, không phải frame mới nhất).
+# Giới hạn buffer = 1 để luôn lấy đúng frame mới nhất.
+cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
 if not cap.isOpened():
     st.error(
@@ -82,6 +97,14 @@ if not cap.isOpened():
     st.stop()
 
 event_log.init_db()
+
+# Tạo pool 1 lần duy nhất, tái sử dụng đúng 2 worker cho mọi frame — trước
+# đây mỗi frame tự tạo threading.Thread() mới rồi huỷ ngay sau khi join(),
+# 15-25 lần/giây. Tạo/huỷ thread native tốn chi phí không đều (phụ thuộc
+# OS scheduler), gây giật cục (jitter) chứ không phải chậm đều. Submit vào
+# pool có sẵn tránh hẳn chi phí tạo/huỷ thread lặp lại này.
+executor = ThreadPoolExecutor(max_workers=2)
+
 was_alerting = False
 was_fall_monitoring = False
 episode_escalated = False
@@ -117,60 +140,53 @@ while run:
     img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
     if frame_count > engine.WARMUP_FRAMES:
-        detection_results = {}
+        # Giai đoạn 1: 2 lệnh MediaPipe (.process) chạy song song qua pool.
+        pose_future = executor.submit(pose_detector.process, img_rgb) if enable_fall else None
+        hand_future = executor.submit(hand_detector.process, img_rgb) if enable_hand else None
 
-        def run_pose():
-            detection_results["pose"] = pose_detector.process(img_rgb)
+        pose_results = pose_future.result() if pose_future else None
+        hand_results = hand_future.result() if hand_future else None
 
-        def run_hands():
-            detection_results["hands"] = hand_detector.process(img_rgb)
+        if enable_fall and pose_results.pose_landmarks:
+            fall_lm_window.append(engine.pose_landmarks_to_vector(pose_results))
+            if show_overlay:
+                frame = engine.draw_pose(frame, pose_results)
 
-        threads = []
-        if enable_fall:
-            t = threading.Thread(target=run_pose)
-            t.start()
-            threads.append(t)
+        raw_vector = None
         if enable_hand:
-            t = threading.Thread(target=run_hands)
-            t.start()
-            threads.append(t)
-        for t in threads:
-            t.join()
-
-        if enable_fall:
-            pose_results = detection_results["pose"]
-            if pose_results.pose_landmarks:
-                fall_lm_window.append(engine.pose_landmarks_to_vector(pose_results))
-                if show_overlay:
-                    frame = engine.draw_pose(frame, pose_results)
-                if len(fall_lm_window) == engine.FALL_TIMESTEPS:
-                    fall_votes.append(engine.predict_fall(fall_model, list(fall_lm_window)))
-                    fall_label = engine.majority_label(fall_votes, fall_label)
-
-        if enable_hand:
-            hand_results = detection_results["hands"]
             if hand_results.multi_hand_landmarks:
                 if show_overlay:
                     frame = engine.draw_hand(frame, hand_results)
                 raw_vector = engine.hand_landmarks_to_vector(hand_results)
-                raw_label, hand_confidence = engine.predict_hand(hand_model, raw_vector, hand_confidence_threshold)
-                hand_votes.append(raw_label)
-                hand_label = engine.majority_label(hand_votes, hand_label)
-
-                if enable_signal:
-                    signal_window.append(raw_vector)
-                    if len(signal_window) == SIGNAL_SEQUENCE_LENGTH:
-                        raw_signal, signal_probability = engine.predict_signal_sequence(
-                            signal_model, list(signal_window), signal_confidence_threshold
-                        )
-                        signal_consecutive_count = signal_consecutive_count + 1 if raw_signal else 0
-                        signal_detected = signal_consecutive_count >= engine.SIGNAL_CONSECUTIVE_REQUIRED
+                signal_window.append(raw_vector)
             else:
                 hand_votes.clear()
                 hand_label = "No hands"
                 signal_window.clear()
                 signal_consecutive_count = 0
                 signal_detected = False
+
+        # Giai đoạn 2: predict Ngã/Tay/Signal — ĐÃ THỬ chạy song song qua
+        # executor (lý thuyết nhanh hơn vì 3 model độc lập nhau), nhưng đo
+        # thực tế trên máy CPU ít nhân lại CHẬM HƠN: quá nhiều thread chạy
+        # cùng lúc (2 mediapipe + tới 3 model + TF tự thêm thread nội bộ mỗi
+        # model) gây tranh chấp CPU nặng hơn lợi ích song song mang lại.
+        # Rollback về tuần tự — đơn giản, ít thread hơn, đo thực tế mượt hơn.
+        if enable_fall and len(fall_lm_window) == engine.FALL_TIMESTEPS:
+            fall_votes.append(engine.predict_fall(fall_model, list(fall_lm_window)))
+            fall_label = engine.majority_label(fall_votes, fall_label)
+
+        if enable_hand and raw_vector is not None:
+            raw_label, hand_confidence = engine.predict_hand(hand_model, raw_vector, hand_confidence_threshold)
+            hand_votes.append(raw_label)
+            hand_label = engine.majority_label(hand_votes, hand_label)
+
+        if enable_hand and enable_signal and raw_vector is not None and len(signal_window) == SIGNAL_SEQUENCE_LENGTH:
+            raw_signal, signal_probability = engine.predict_signal_sequence(
+                signal_model, list(signal_window), signal_confidence_threshold
+            )
+            signal_consecutive_count = signal_consecutive_count + 1 if raw_signal else 0
+            signal_detected = signal_consecutive_count >= engine.SIGNAL_CONSECUTIVE_REQUIRED
 
     now = time.time()
 
@@ -214,7 +230,15 @@ while run:
     fps = 1 / (now - prev_time) if now > prev_time else 0
     prev_time = now
 
-    frame_placeholder.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), channels="RGB")
+    # Tự nén JPEG chất lượng 70 rồi đưa bytes cho st.image() thay vì đưa
+    # mảng numpy để nó tự mã hoá — Streamlit tự chọn chất lượng khá cao,
+    # đo thực tế ra ~212KB/frame ở 640x480 (đáng ra chỉ cần ~30-60KB), mỗi
+    # frame là 1 lần tải riêng qua trình duyệt nên phần này cộng dồn đáng kể.
+    encode_ok, jpeg_bytes = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+    if encode_ok:
+        frame_placeholder.image(jpeg_bytes.tobytes())
+    else:
+        frame_placeholder.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), channels="RGB")
 
     # Ghi lại trạng thái mới nhất vào session_state để trang Dashboard đọc
     # được — Streamlit chỉ chạy 1 trang/lần nên Dashboard không "live" thật,
@@ -227,6 +251,9 @@ while run:
         st.session_state["last_status"] = "safe"
     st.session_state["last_status_time"] = now
     st.session_state["camera_online"] = True
+    sidebar_status_placeholder = st.session_state.get("sidebar_status_placeholder")
+    if sidebar_status_placeholder is not None:
+        sidebar_status_placeholder.markdown(sidebar_status_html(True), unsafe_allow_html=True)
 
     # ----- Banner trạng thái tổng thể (Safe / Monitoring / Emergency) -----
     if sos_alert:
@@ -279,4 +306,7 @@ while run:
     run = st.session_state["run_webcam"]
 
 cap.release()
+executor.shutdown(wait=False)
 st.session_state["camera_online"] = False
+if st.session_state.get("sidebar_status_placeholder") is not None:
+    st.session_state["sidebar_status_placeholder"].markdown(sidebar_status_html(False), unsafe_allow_html=True)

@@ -7,7 +7,7 @@ Chạy: streamlit run main.py
 import streamlit as st
 
 import profile_store
-from theme import APP_NAME, inject_global_theme, render_sidebar_brand, render_sidebar_profile
+from theme import APP_NAME, inject_global_theme, render_sidebar_brand, render_sidebar_profile, sidebar_status_html
 
 st.set_page_config(page_title=APP_NAME, page_icon="🛡️", layout="wide")
 inject_global_theme()
@@ -38,7 +38,14 @@ with st.sidebar:
     render_sidebar_profile(
         name=st.session_state.get("user_name", "Người dùng"),
         role=profile_store.load_profile()["role"],
-        system_online=st.session_state.get("camera_online", False),
+    )
+    # Placeholder này được lưu vào session_state để views/live_view.py lấy
+    # lại và cập nhật LIÊN TỤC trong vòng lặp webcam của nó (cùng 1 script
+    # đang chạy, nên placeholder vẫn hợp lệ) — sửa lỗi sidebar báo "Hệ
+    # thống ngưng" dù camera đang live.
+    st.session_state["sidebar_status_placeholder"] = st.empty()
+    st.session_state["sidebar_status_placeholder"].markdown(
+        sidebar_status_html(st.session_state.get("camera_online", False)), unsafe_allow_html=True
     )
 
 nav.run()

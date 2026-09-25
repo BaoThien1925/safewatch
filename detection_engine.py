@@ -17,6 +17,19 @@ from keras.models import Sequential
 
 from hand_features import load_hand_labels, normalize_hand_landmarks, normalize_hand_sequence
 
+# Mặc định TensorFlow tự spawn nhiều thread nội bộ (intra/inter-op) CHO MỖI
+# model. Ở đây có 3 model (Ngã, Tay, Signal) + 2 MediaPipe Solution (cũng tự
+# có thread pool riêng) + thread mình tự tạo để chạy song song Pose/Hands
+# (xem views/live_view.py) — tổng số thread thực tế dễ vượt xa số nhân CPU
+# thật, gây tranh chấp CPU (oversubscription) khiến chạy CHẬM HƠN thay vì
+# nhanh hơn. Giới hạn TF về ít thread nội bộ (nhường chỗ cho thread mình tự
+# quản lý) sửa đúng vấn đề này. Phải set TRƯỚC khi TF chạy op đầu tiên.
+try:
+    tf.config.threading.set_intra_op_parallelism_threads(2)
+    tf.config.threading.set_inter_op_parallelism_threads(2)
+except RuntimeError:
+    pass  # TF đã init rồi (module bị import lại) -- không set lại được, bỏ qua.
+
 MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
 FALL_MODEL_PATH = os.path.join(MODELS_DIR, "LSTM_model.h5")
 HAND_MODEL_PATH = os.path.join(MODELS_DIR, "HandLandMarks_Model_Extended.keras")
@@ -134,6 +147,25 @@ def build_signal_model():
 @st.cache_resource
 def load_models():
     return build_fall_model(), build_hand_model(), build_signal_model()
+
+
+def warm_up_models(fall_model, hand_model, signal_model):
+    """Gọi predict 1 lần với input giả (toàn số 0) để TF trace/biên dịch
+    graph ngay bây giờ, không phải lúc frame thật đầu tiên tới (mới thấy
+    chậm rõ ở vài giây đầu, kể cả khi model đã cache qua @st.cache_resource
+    -- cache chỉ tránh load lại file, không tránh được chi phí lần predict
+    đầu tiên)."""
+    dummy_fall = [[0.0] * 99 for _ in range(FALL_TIMESTEPS)]
+    predict_fall(fall_model, dummy_fall)
+
+    dummy_hand = [0.0] * 63
+    predict_hand(hand_model, dummy_hand, confidence_threshold=1.1)  # threshold>1 -> luôn "Uncertain", không quan trọng
+
+    if signal_model is not None:
+        from hand_features import SIGNAL_SEQUENCE_LENGTH
+
+        dummy_signal = [[0.0] * 63 for _ in range(SIGNAL_SEQUENCE_LENGTH)]
+        predict_signal_sequence(signal_model, dummy_signal, confidence_threshold=1.1)
 
 
 @st.cache_resource
