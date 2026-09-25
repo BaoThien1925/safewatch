@@ -64,6 +64,7 @@ def friendly_hand_label(raw_label):
 
 
 CAMERA_RESOLUTIONS = {
+    "320x240": (320, 240),
     "640x480": (640, 480),
     "1280x720": (1280, 720),
 }
@@ -137,7 +138,12 @@ def load_models():
 
 @st.cache_resource
 def get_mediapipe():
-    mp_pose = mp.solutions.pose.Pose()
+    # model_complexity=0 (lite) thay vì mặc định 1 (full) — nhanh hơn rõ rệt
+    # trên CPU. LƯU Ý: model Ngã được train trên landmark sinh ra từ Pose
+    # complexity=1 (mặc định lúc train) — đổi complexity đồng nghĩa đổi luôn
+    # phân phối landmark đầu vào, CHƯA được kiểm chứng model Ngã còn chính
+    # xác y như cũ hay không. Nên test kỹ (tự ngã thử) trước khi tin tưởng.
+    mp_pose = mp.solutions.pose.Pose(model_complexity=0)
     mp_hands = mp.solutions.hands.Hands(static_image_mode=False, max_num_hands=1, min_detection_confidence=0.5)
     return mp_pose, mp_hands
 

@@ -52,7 +52,7 @@ frame_placeholder = video_col.empty()
 status_banner_placeholder = status_col.empty()
 fall_line_placeholder = status_col.empty()
 hand_line_placeholder = status_col.empty()
-advanced_placeholder = status_col.container()
+advanced_placeholder = status_col.empty()
 
 if not run:
     live_badge_placeholder.empty()
@@ -265,7 +265,7 @@ while run:
         f"**Cử chỉ tay:** {engine.friendly_hand_label(hand_label) if enable_hand else 'Đã tắt'}"
     )
 
-    with advanced_placeholder:
+    with advanced_placeholder.container():
         with st.expander("Thông tin nâng cao", expanded=False):
             st.caption(f"Nhãn thô (ngã): `{fall_label}`")
             st.caption(f"Nhãn thô (tay): `{hand_label}`")
