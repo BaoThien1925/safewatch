@@ -22,9 +22,9 @@ with st.sidebar:
 # không load được trên máy này (kể cả icon nội bộ của Streamlit cũng bị lỗi
 # hiện chữ thô), emoji thì luôn hiện đúng vì không phụ thuộc font ngoài.
 pages = [
-    st.Page("views/dashboard.py", title="Dashboard", icon="📊", default=True),
-    st.Page("views/live_view.py", title="Xem trực tiếp", icon="🎥"),
+    st.Page("views/live_view.py", title="Trang chủ", icon="🏠", default=True),
     st.Page("views/history.py", title="Lịch sử sự cố", icon="📋"),
+    st.Page("views/dashboard.py", title="Dashboard", icon="📊"),
     st.Page("views/camera_management.py", title="Quản lý camera", icon="📷"),
     st.Page("views/emergency_contacts.py", title="Người liên hệ khẩn cấp", icon="📞"),
     st.Page("views/settings.py", title="Cấu hình", icon="⚙️"),

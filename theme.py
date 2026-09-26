@@ -28,11 +28,28 @@ chỉ ảnh hưởng qua inheritance, phần tử nào tự khai font riêng (ic
 giữ đúng font của nó. */
 html, body, .stApp {{
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    /* Cỡ chữ gốc toàn app — Streamlit dùng rem cho hầu hết label/caption/
+    checkbox nên tăng cỡ gốc này sẽ kéo to theo tỉ lệ toàn bộ giao diện,
+    không chỉ riêng sidebar. Mặc định trình duyệt/Streamlit ~14-16px, nhiều
+    người thấy hơi nhỏ (đặc biệt lúc demo/chiếu), nên nâng lên rõ rệt. */
+    font-size: 16px;
 }}
 
 .stApp {{
     background-color: {COLOR_BG};
 }}
+
+/* Chữ sidebar (tên nav + brand + profile) — to hơn cỡ chữ gốc 1 chút, vì
+đây là phần điều hướng chính, nhưng không quá to để tránh vỡ dòng/tràn chữ
+trong sidebar (đã bị ở mức 1.3rem trước đó). */
+[data-testid="stSidebarNav"] a,
+[data-testid="stSidebarNav"] span,
+[data-testid="stSidebarNavItems"] a,
+[data-testid="stSidebarNavItems"] span {{
+    font-size: 1.05rem !important;
+}}
+.sw-brand-name {{ font-size: 1.1rem !important; }}
+.sw-brand-tagline {{ font-size: 0.78rem !important; }}
 
 /* Sidebar branding */
 [data-testid="stSidebarHeader"] {{
@@ -166,14 +183,14 @@ def render_sidebar_profile(name="Nguyễn Văn A", role="Người dùng cá nhâ
     st.markdown(
         f"""
         <div style="display:flex;align-items:center;gap:0.6rem;">
-            <div style="width:36px;height:36px;border-radius:50%;background:{COLOR_BLUE};
+            <div style="width:40px;height:40px;border-radius:50%;background:{COLOR_BLUE};
                         color:white;display:flex;align-items:center;justify-content:center;
-                        font-weight:700;font-size:0.9rem;">
+                        font-weight:700;font-size:1rem;">
                 {name.strip()[0].upper() if name.strip() else "?"}
             </div>
             <div>
-                <div style="font-weight:600;font-size:0.85rem;color:{COLOR_NAVY};">{name}</div>
-                <div style="font-size:0.72rem;color:{COLOR_TEXT_MUTED};">{role}</div>
+                <div style="font-weight:600;font-size:1rem;color:{COLOR_NAVY};">{name}</div>
+                <div style="font-size:0.85rem;color:{COLOR_TEXT_MUTED};">{role}</div>
             </div>
         </div>
         """,
@@ -185,7 +202,7 @@ def sidebar_status_html(system_online):
     status_dot = "🟢" if system_online else "🔴"
     status_text = "Hệ thống hoạt động" if system_online else "Hệ thống ngưng"
     return (
-        f'<div style="font-size:0.75rem;color:{COLOR_TEXT_MUTED};">{status_dot} {status_text}</div>'
+        f'<div style="font-size:0.85rem;color:{COLOR_TEXT_MUTED};">{status_dot} {status_text}</div>'
     )
 
 

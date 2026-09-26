@@ -22,7 +22,8 @@ from theme import badge_html, sidebar_status_html, status_banner_html
 
 engine.ensure_settings_defaults()
 
-st.title("Xem trực tiếp")
+st.title("Trang chủ")
+st.caption("Xem trực tiếp — theo dõi webcam thời gian thực")
 
 s = st.session_state
 enable_fall = s["enable_fall"]
