@@ -23,7 +23,7 @@ from theme import badge_html, sidebar_status_html, status_banner_html
 engine.ensure_settings_defaults()
 
 st.title("Trang chủ")
-st.caption("Xem trực tiếp — theo dõi webcam thời gian thực")
+st.caption("Giám sát an toàn cá nhân bằng AI")
 
 s = st.session_state
 enable_fall = s["enable_fall"]
@@ -35,38 +35,91 @@ signal_confidence_threshold = s["signal_confidence_threshold"]
 mirror_camera = s["mirror_camera"]
 alert_hold_seconds = s["alert_hold_seconds"]
 cam_width, cam_height = engine.CAMERA_RESOLUTIONS.get(s["camera_resolution"], (640, 480))
+s.setdefault("run_webcam", False)
 
-top_col1, top_col2, top_col3, top_col4 = st.columns([3, 2, 2, 1])
-with top_col1:
+control_col1, control_col2 = st.columns([2, 3])
+with control_col1:
     st.selectbox("Camera", ["Webcam chính (mặc định)"], disabled=True)
-with top_col2:
-    st.caption("Bật/tắt pipeline và ngưỡng: xem trang **Cấu hình**")
-with top_col3:
+with control_col2:
     show_overlay = st.checkbox("Hiện điểm landmark", value=s["show_overlay"], key="show_overlay")
-    st.caption("Tắt để giảm tải vẽ hình, có thể mượt hơn")
-with top_col4:
-    run = st.checkbox("▶️ Bắt đầu giám sát", value=False, key="run_webcam")
+    st.caption("Bật/tắt pipeline và ngưỡng: xem trang **Cấu hình**")
 
-video_col, status_col = st.columns([7, 3])
+video_col, action_col = st.columns([7, 3])
 
-live_badge_placeholder = video_col.empty()
-frame_placeholder = video_col.empty()
+with video_col:
+    live_line_col1, live_line_col2 = st.columns([1, 1])
+    live_badge_placeholder = live_line_col1.empty()
+    resolution_placeholder = live_line_col2.empty()
+    frame_placeholder = st.empty()
 
-status_banner_placeholder = status_col.empty()
-fall_line_placeholder = status_col.empty()
-hand_line_placeholder = status_col.empty()
-advanced_placeholder = status_col.empty()
+with action_col:
+    start_clicked = st.button(
+        "▶  Bắt đầu giám sát", type="primary", use_container_width=True, disabled=s["run_webcam"]
+    )
+    st.caption("Kích hoạt AI để theo dõi camera")
+    stop_clicked = st.button("⏸  Dừng giám sát", use_container_width=True, disabled=not s["run_webcam"])
+    st.caption("Tạm dừng theo dõi")
+
+    if start_clicked:
+        s["run_webcam"] = True
+        s["monitor_start_time"] = time.time()
+    if stop_clicked:
+        s["run_webcam"] = False
+
+    status_banner_placeholder = st.empty()
+    fall_line_placeholder = st.empty()
+    hand_line_placeholder = st.empty()
+    advanced_placeholder = st.empty()
+
+run = s["run_webcam"]
+
+st.markdown("")
+card_col1, card_col2, card_col3 = st.columns(3)
+with card_col1:
+    camera_card_placeholder = st.empty()
+with card_col2:
+    duration_card_placeholder = st.empty()
+with card_col3:
+    incidents_card_placeholder = st.empty()
+
+
+def render_kpi_card(placeholder, label, value, sub):
+    with placeholder.container(border=True):
+        st.markdown(f'<div class="sw-kpi-label">{label}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="sw-kpi-value">{value}</div>', unsafe_allow_html=True)
+        st.caption(sub)
+
+
+today_incident_count = sum(
+    1 for ts, _, _ in event_log.get_events(limit=1000) if ts.startswith(time.strftime("%Y-%m-%d"))
+)
 
 if not run:
     live_badge_placeholder.empty()
-    frame_placeholder.info("Bấm '▶️ Bắt đầu giám sát' ở trên để xem camera trực tiếp.")
+    resolution_placeholder.empty()
+    frame_placeholder.markdown(
+        """
+        <div style="height:360px;border:1px dashed #CBD5E1;border-radius:12px;
+                    display:flex;align-items:center;justify-content:center;
+                    background:#F8FAFC;color:#64748B;text-align:center;padding:1rem;">
+            📷&nbsp; Bấm "▶ Bắt đầu giám sát" để xem camera trực tiếp
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     status_banner_placeholder.markdown(
         status_banner_html("safe", "CHƯA GIÁM SÁT", "Bấm Bắt đầu giám sát để hệ thống theo dõi."),
         unsafe_allow_html=True,
     )
+    render_kpi_card(camera_card_placeholder, "📷 Trạng thái camera", "Chưa hoạt động", "Webcam chính")
+    render_kpi_card(duration_card_placeholder, "⏱️ Thời gian giám sát", "00:00:00", "Chưa bắt đầu")
+    render_kpi_card(incidents_card_placeholder, "🚨 Sự cố phát hiện", str(today_incident_count), "Hôm nay")
     st.stop()
 
-live_badge_placeholder.markdown(badge_html("live", "● LIVE"), unsafe_allow_html=True)
+live_badge_placeholder.markdown(badge_html("live", "🔴 TRỰC TIẾP"), unsafe_allow_html=True)
+resolution_placeholder.markdown(
+    f"<div style='text-align:right;color:#64748B;font-size:0.85rem;'>{cam_height}p</div>", unsafe_allow_html=True
+)
 
 fall_model, hand_model, signal_model = engine.load_models()
 if enable_signal and signal_model is None:
@@ -226,6 +279,7 @@ while run:
             event_log.log_event(hand_label, f"Độ tin cậy {hand_confidence * 100:.0f}%")
         elif enable_hand and enable_signal and signal_detected:
             event_log.log_event("Signal for Help (chuỗi động tác)", f"Xác suất {signal_probability * 100:.0f}%")
+        today_incident_count += 1
     was_alerting = sos_alert
 
     fps = 1 / (now - prev_time) if now > prev_time else 0
@@ -303,6 +357,15 @@ while run:
             st.caption(f"FPS: {fps:.1f}")
             st.caption(f"Độ phân giải: {cam_width}x{cam_height}")
             st.caption("Model: LSTM (ngã) · DNN+LSTM 14 nhãn (tay) · LSTM nhị phân (signal, thử nghiệm)")
+
+    elapsed = now - s.get("monitor_start_time", now)
+    hh, rem = divmod(int(elapsed), 3600)
+    mm, ss = divmod(rem, 60)
+    render_kpi_card(camera_card_placeholder, "📷 Trạng thái camera", "Đang hoạt động", "Webcam chính")
+    render_kpi_card(
+        duration_card_placeholder, "⏱️ Thời gian giám sát", f"{hh:02d}:{mm:02d}:{ss:02d}", "Đang giám sát"
+    )
+    render_kpi_card(incidents_card_placeholder, "🚨 Sự cố phát hiện", str(today_incident_count), "Hôm nay")
 
     run = st.session_state["run_webcam"]
 
