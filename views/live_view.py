@@ -15,7 +15,12 @@ card, FPS), không xử lý frame nào cả.
 import time
 
 import streamlit as st
-from streamlit_webrtc import RTCConfiguration, get_hf_ice_servers, webrtc_streamer
+from streamlit_webrtc import (
+    RTCConfiguration,
+    get_cloudflare_ice_servers,
+    get_hf_ice_servers,
+    webrtc_streamer,
+)
 
 import detection_engine as engine
 import event_log
@@ -28,16 +33,27 @@ engine.ensure_settings_defaults()
 # trường học). Mạng chặt hơn (NAT đối xứng, firewall công ty/1 số mobile
 # network) cần thêm TURN server (máy trung chuyển thật) mới kết nối được —
 # STUN không đủ trong trường hợp đó, biểu hiện là "Connection is taking
-# longer than expected". Dùng TURN miễn phí của Hugging Face nếu có
-# HF_TOKEN trong Secrets (Settings > Secrets trên Streamlit Cloud), còn
-# không thì chỉ dùng STUN (đủ cho hầu hết trường hợp, thiếu cho mạng ngặt).
+# longer than expected". Ưu tiên Cloudflare Realtime TURN (ổn định hơn,
+# cần CF_TURN_KEY_ID + CF_TURN_API_TOKEN trong Secrets), rơi về TURN miễn
+# phí Hugging Face (HF_TOKEN) nếu không có Cloudflare, cuối cùng rơi về
+# STUN-only nếu không có cả 2 (Settings > Secrets trên Streamlit Cloud).
 _ice_servers = [{"urls": ["stun:stun.l.google.com:19302"]}]
-_hf_token = st.secrets.get("HF_TOKEN") if hasattr(st, "secrets") else None
-if _hf_token:
+_secrets = st.secrets if hasattr(st, "secrets") else {}
+_cf_key_id = _secrets.get("CF_TURN_KEY_ID")
+_cf_api_token = _secrets.get("CF_TURN_API_TOKEN")
+_hf_token = _secrets.get("HF_TOKEN")
+
+if _cf_key_id and _cf_api_token:
+    try:
+        _ice_servers = get_cloudflare_ice_servers(_cf_key_id, _cf_api_token)
+    except Exception:
+        pass  # key sai/hết hạn/mạng lỗi lúc xin TURN -> thử HF bên dưới thay vì crash.
+if _ice_servers == [{"urls": ["stun:stun.l.google.com:19302"]}] and _hf_token:
     try:
         _ice_servers = get_hf_ice_servers(_hf_token)
     except Exception:
-        pass  # token sai/hết hạn/mạng lỗi lúc xin TURN -> rơi về STUN, còn hơn crash cả app.
+        pass  # rơi về STUN, còn hơn crash cả app.
+
 RTC_CONFIGURATION = RTCConfiguration({"iceServers": _ice_servers})
 
 st.title("Trang chủ")
