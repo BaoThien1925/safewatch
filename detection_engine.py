@@ -177,12 +177,13 @@ def warm_up_models(fall_model, hand_model, signal_model):
 
 @st.cache_resource
 def get_mediapipe():
-    # model_complexity=0 (lite) thay vì mặc định 1 (full) — nhanh hơn rõ rệt
-    # trên CPU. LƯU Ý: model Ngã được train trên landmark sinh ra từ Pose
-    # complexity=1 (mặc định lúc train) — đổi complexity đồng nghĩa đổi luôn
-    # phân phối landmark đầu vào, CHƯA được kiểm chứng model Ngã còn chính
-    # xác y như cũ hay không. Nên test kỹ (tự ngã thử) trước khi tin tưởng.
-    mp_pose = mp_solutions.pose.Pose(model_complexity=0)
+    # Dùng model_complexity mặc định (1, "full") — KHÔNG đổi xuống 0 (lite):
+    # (1) model Ngã được train trên landmark sinh ra từ complexity=1, đổi
+    # sẽ lệch phân phối input; (2) complexity=0 buộc MediaPipe copy/chọn
+    # lại file .tflite khác lúc runtime (thao tác ghi), gây
+    # PermissionError trên filesystem chỉ đọc như Streamlit Cloud —
+    # complexity=1 dùng đúng file đã có sẵn, không cần ghi gì.
+    mp_pose = mp_solutions.pose.Pose()
     mp_hands = mp_solutions.hands.Hands(static_image_mode=False, max_num_hands=1, min_detection_confidence=0.5)
     return mp_pose, mp_hands
 
