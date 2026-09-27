@@ -15,7 +15,7 @@ card, FPS), không xử lý frame nào cả.
 import time
 
 import streamlit as st
-from streamlit_webrtc import RTCConfiguration, webrtc_streamer
+from streamlit_webrtc import RTCConfiguration, get_hf_ice_servers, webrtc_streamer
 
 import detection_engine as engine
 import event_log
@@ -24,11 +24,21 @@ from webrtc_processor import DetectionVideoProcessor
 
 engine.ensure_settings_defaults()
 
-# STUN công khai của Google — đủ cho hầu hết mạng nhà/trường học thông
-# thường. Mạng có NAT/firewall chặt (ví dụ mạng công ty) có thể cần thêm
-# TURN server (streamlit_webrtc.get_cloudflare_ice_servers() hoặc tương tự)
-# để kết nối được — chưa cấu hình trong bản này.
-RTC_CONFIGURATION = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]})
+# STUN công khai của Google luôn có sẵn — đủ cho mạng "dễ" (nhà, hầu hết
+# trường học). Mạng chặt hơn (NAT đối xứng, firewall công ty/1 số mobile
+# network) cần thêm TURN server (máy trung chuyển thật) mới kết nối được —
+# STUN không đủ trong trường hợp đó, biểu hiện là "Connection is taking
+# longer than expected". Dùng TURN miễn phí của Hugging Face nếu có
+# HF_TOKEN trong Secrets (Settings > Secrets trên Streamlit Cloud), còn
+# không thì chỉ dùng STUN (đủ cho hầu hết trường hợp, thiếu cho mạng ngặt).
+_ice_servers = [{"urls": ["stun:stun.l.google.com:19302"]}]
+_hf_token = st.secrets.get("HF_TOKEN") if hasattr(st, "secrets") else None
+if _hf_token:
+    try:
+        _ice_servers = get_hf_ice_servers(_hf_token)
+    except Exception:
+        pass  # token sai/hết hạn/mạng lỗi lúc xin TURN -> rơi về STUN, còn hơn crash cả app.
+RTC_CONFIGURATION = RTCConfiguration({"iceServers": _ice_servers})
 
 st.title("Trang chủ")
 st.caption("Giám sát an toàn cá nhân bằng AI")
