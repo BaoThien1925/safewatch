@@ -9,6 +9,13 @@ import os
 from collections import Counter
 
 import mediapipe as mp
+
+# Bản mediapipe mới (0.10.35, xem lịch sử git — bump từ 0.10.21 để né bug
+# PermissionError trên Streamlit Cloud) không tự gắn `mp.solutions` vào
+# namespace gốc nữa (package __init__.py giờ chỉ eager-import Tasks API
+# mới). API cũ (Pose/Hands) vẫn còn, chỉ cần import submodule trực tiếp
+# thay vì trông cậy vào thuộc tính `mp.solutions`.
+from mediapipe import solutions as mp_solutions
 import numpy as np
 import streamlit as st
 import tensorflow as tf
@@ -175,8 +182,8 @@ def get_mediapipe():
     # complexity=1 (mặc định lúc train) — đổi complexity đồng nghĩa đổi luôn
     # phân phối landmark đầu vào, CHƯA được kiểm chứng model Ngã còn chính
     # xác y như cũ hay không. Nên test kỹ (tự ngã thử) trước khi tin tưởng.
-    mp_pose = mp.solutions.pose.Pose(model_complexity=0)
-    mp_hands = mp.solutions.hands.Hands(static_image_mode=False, max_num_hands=1, min_detection_confidence=0.5)
+    mp_pose = mp_solutions.pose.Pose(model_complexity=0)
+    mp_hands = mp_solutions.hands.Hands(static_image_mode=False, max_num_hands=1, min_detection_confidence=0.5)
     return mp_pose, mp_hands
 
 
@@ -219,11 +226,11 @@ def predict_signal_sequence(model, frame_sequence, confidence_threshold):
 
 
 def draw_pose(img, results):
-    mp.solutions.drawing_utils.draw_landmarks(img, results.pose_landmarks, mp.solutions.pose.POSE_CONNECTIONS)
+    mp_solutions.drawing_utils.draw_landmarks(img, results.pose_landmarks, mp_solutions.pose.POSE_CONNECTIONS)
     return img
 
 
 def draw_hand(img, results):
     for hand_lms in results.multi_hand_landmarks:
-        mp.solutions.drawing_utils.draw_landmarks(img, hand_lms, mp.solutions.hands.HAND_CONNECTIONS)
+        mp_solutions.drawing_utils.draw_landmarks(img, hand_lms, mp_solutions.hands.HAND_CONNECTIONS)
     return img
