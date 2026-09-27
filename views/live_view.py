@@ -99,12 +99,22 @@ def processor_factory():
     return DetectionVideoProcessor(fall_model, hand_model, signal_model, pose_detector, hand_detector, config)
 
 
+cam_width, cam_height = engine.CAMERA_RESOLUTIONS.get(s["camera_resolution"], (640, 480))
+
 with video_col:
     webrtc_ctx = webrtc_streamer(
         key="safewatch-live",
         video_processor_factory=processor_factory,
         rtc_configuration=RTC_CONFIGURATION,
-        media_stream_constraints={"video": True, "audio": False},
+        # Không giới hạn độ phân giải ở đây thì trình duyệt tự capture ở độ
+        # phân giải MẶC ĐỊNH của webcam (thường 720p+) — nặng hơn hẳn cho
+        # mọi bước sau (mã hoá gửi lên, decode ở server, chạy AI), nhất là
+        # trên CPU giới hạn của free tier cloud. "ideal" là gợi ý, không ép
+        # buộc — webcam yếu hơn vẫn hoạt động, chỉ không vượt quá mức này.
+        media_stream_constraints={
+            "video": {"width": {"ideal": cam_width}, "height": {"ideal": cam_height}},
+            "audio": False,
+        },
     )
 
 with action_col:
