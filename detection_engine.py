@@ -15,7 +15,7 @@ import mediapipe as mp
 # namespace gốc nữa (package __init__.py giờ chỉ eager-import Tasks API
 # mới). API cũ (Pose/Hands) vẫn còn, chỉ cần import submodule trực tiếp
 # thay vì trông cậy vào thuộc tính `mp.solutions`.
-from mediapipe import solutions as mp_solutions
+from mediapipe.python import solutions as mp_solutions
 import numpy as np
 import streamlit as st
 import tensorflow as tf
