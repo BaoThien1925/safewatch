@@ -121,6 +121,11 @@ with video_col:
             "video": {"width": {"ideal": cam_width}, "height": {"ideal": cam_height}},
             "audio": False,
         },
+        # Hàng đợi nội bộ mặc định giữ tới 4 frame trước khi xử lý — cộng
+        # dồn thành độ trễ vài trăm ms tới vài giây nếu xử lý không theo
+        # kịp. Giảm về 1 (giống CAP_PROP_BUFFERSIZE=1 ở bản cv2 cũ): luôn
+        # lấy đúng frame mới nhất, chấp nhận rớt frame cũ thay vì trễ dồn.
+        video_receiver_size=1,
     )
 
 with action_col:
