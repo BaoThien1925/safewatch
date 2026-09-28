@@ -83,6 +83,16 @@ class DetectionVideoProcessor(VideoProcessorBase):
         with self.lock:
             return dict(self.public_state)
 
+    # Webcam thường gửi ~30 frame/giây, nhưng recv() phải xử lý XONG mỗi
+    # frame mới được trả về hiển thị (khác hẳn bản cv2 cũ, video giờ hiện
+    # trực tiếp qua <video> của trình duyệt, không qua Streamlit nữa) — 1
+    # frame chạy đủ Pose+Hands+2-3 model TF dễ mất >100ms, tức <10fps thật,
+    # gây giật rõ dù máy mạnh hay yếu. Chỉ chạy AI mỗi PROCESS_EVERY_N_FRAMES
+    # frame, các frame còn lại trả về ngay (không chờ AI) — video mượt hơn
+    # nhiều, đổi lại tốc độ CẬP NHẬT kết quả nhận diện giảm (vẫn đủ nhanh
+    # cho mục đích an toàn — không cần kiểm tra 30 lần/giây).
+    PROCESS_EVERY_N_FRAMES = 3
+
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
         cfg = self.config
@@ -91,9 +101,13 @@ class DetectionVideoProcessor(VideoProcessorBase):
             img = cv2.flip(img, 1)
 
         self.frame_count += 1
-        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        should_process = (
+            self.frame_count > engine.WARMUP_FRAMES
+            and self.frame_count % self.PROCESS_EVERY_N_FRAMES == 0
+        )
 
-        if self.frame_count > engine.WARMUP_FRAMES:
+        if should_process:
+            img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             pose_results = self.pose_detector.process(img_rgb) if cfg["enable_fall"] else None
             hand_results = self.hand_detector.process(img_rgb) if cfg["enable_hand"] else None
 
