@@ -38,10 +38,16 @@ engine.ensure_settings_defaults()
 # phí Hugging Face (HF_TOKEN) nếu không có Cloudflare, cuối cùng rơi về
 # STUN-only nếu không có cả 2 (Settings > Secrets trên Streamlit Cloud).
 _ice_servers = [{"urls": ["stun:stun.l.google.com:19302"]}]
-_secrets = st.secrets if hasattr(st, "secrets") else {}
-_cf_key_id = _secrets.get("CF_TURN_KEY_ID")
-_cf_api_token = _secrets.get("CF_TURN_API_TOKEN")
-_hf_token = _secrets.get("HF_TOKEN")
+try:
+    # st.secrets ném StreamlitSecretNotFoundError ngay khi truy cập (không
+    # phải chỉ khi thiếu key) nếu máy không có file secrets.toml — bình
+    # thường lúc chạy local (chỉ Streamlit Cloud mới tự có qua Settings >
+    # Secrets), nên phải bọc try/except quanh CẢ việc đọc, không chỉ .get().
+    _cf_key_id = st.secrets.get("CF_TURN_KEY_ID")
+    _cf_api_token = st.secrets.get("CF_TURN_API_TOKEN")
+    _hf_token = st.secrets.get("HF_TOKEN")
+except Exception:
+    _cf_key_id = _cf_api_token = _hf_token = None
 
 if _cf_key_id and _cf_api_token:
     try:
