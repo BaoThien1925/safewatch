@@ -1,5 +1,5 @@
 opencv-python-headless
-mediapipe==0.10.35
+mediapipe==0.10.21
 tensorflow
 keras
 pandas
