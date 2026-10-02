@@ -1,6 +1,5 @@
 # SafeWatch — Giám sát an toàn cá nhân bằng AI (demo)
 
-Demo hợp nhất: phát hiện **ngã quỵ** + **tín hiệu tay SOS** qua webcam.
 
 ## Yêu cầu
 
