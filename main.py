@@ -12,6 +12,26 @@ from theme import APP_NAME, inject_global_theme, render_sidebar_brand, render_si
 st.set_page_config(page_title=APP_NAME, page_icon="🛡️", layout="wide")
 inject_global_theme()
 
+st.set_page_config(page_title=APP_NAME, page_icon="🛡️", layout="wide")
+inject_global_theme()
+
+hide_default_ui = """
+<style>
+/* Ẩn thanh công cụ trên cùng (chứa nút Stop, Fork, icon GitHub và Menu) */
+header {visibility: hidden !important;}
+
+/* Ẩn toàn bộ thẻ "Created by..." và logo "Hosted with Streamlit" ở góc dưới */
+.viewerBadge_container {display: none !important;}
+
+/* Ẩn footer bản quyền mặc định của nền tảng */
+footer {visibility: hidden !important;}
+</style>
+"""
+st.markdown(hide_default_ui, unsafe_allow_html=True)
+
+if "user_name" not in st.session_state:
+    st.session_state["user_name"] = profile_store.load_profile()["name"]
+
 if "user_name" not in st.session_state:
     st.session_state["user_name"] = profile_store.load_profile()["name"]
 
